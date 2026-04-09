@@ -35,7 +35,7 @@ class OandaClient:
             params["includeFirst"] = "true"
         if to_time:
             params["to"] = to_time
-        if count:
+        if count and not (from_time and to_time):
             params["count"] = min(count, self.MAX_CANDLES)
 
         resp = requests.get(url, headers=self.headers, params=params)

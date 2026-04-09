@@ -139,6 +139,18 @@ class TestGetCandles:
         assert call_params["count"] <= OandaClient.MAX_CANDLES
 
     @patch("src.data.oanda_client.requests.get")
+    def test_count_omitted_when_from_and_to_set(self, mock_get, client, sample_candle_response):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = sample_candle_response
+        mock_get.return_value = mock_resp
+
+        client.get_candles("EUR_USD", "M5", from_time="2025-01-01T00:00:00Z",
+                           to_time="2025-01-02T00:00:00Z", count=5000)
+        call_params = mock_get.call_args[1]["params"]
+        assert "count" not in call_params
+
+    @patch("src.data.oanda_client.requests.get")
     def test_mba_price_requested(self, mock_get, client, sample_candle_response):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
