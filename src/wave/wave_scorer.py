@@ -35,7 +35,7 @@ def calculate_conviction(state: str, maturity: float,
     if state == "RANGING":
         return 0.0
 
-    base = 0.5
+    base = 1.0
     maturity_factor = 1.0 - (maturity * 0.4)
     clarity_factor = 0.7 + (swing_clarity * 0.3)
     swing_factor = min(1.0, 0.6 + (consecutive_swings * 0.1))

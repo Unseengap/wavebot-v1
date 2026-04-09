@@ -18,23 +18,28 @@ SESSION_SIZE_MULTIPLIERS = {
 def get_directional_gate(wave_scores: dict) -> str:
     """
     Stage 1: Binary directional filter from D and W.
+    Falls back to H4 when D is RANGING or unavailable.
     Returns "BULLISH", "BEARISH", or "NEUTRAL".
     """
     d_score = wave_scores.get("D")
     w_score = wave_scores.get("W")
 
-    if d_score is None:
-        return "NEUTRAL"
-
     # Weekly overrides daily if strong
     if w_score and abs(w_score.direction * w_score.conviction) > 0.5:
         bias = w_score.direction
-    else:
+    elif d_score and d_score.conviction > 0:
         bias = d_score.direction * d_score.conviction
+    else:
+        # D is RANGING (conviction=0) or absent — fall back to H4
+        h4_score = wave_scores.get("H4")
+        if h4_score and h4_score.conviction > 0:
+            bias = h4_score.direction * h4_score.conviction
+        else:
+            return "NEUTRAL"
 
-    if bias > 0.15:
+    if bias > 0.10:
         return "BULLISH"
-    elif bias < -0.15:
+    elif bias < -0.10:
         return "BEARISH"
     return "NEUTRAL"
 
@@ -79,7 +84,7 @@ def _get_primary_maturity(wave_scores: dict) -> float:
     return 0.0
 
 
-def get_signal_frame(wave_scores: dict, direction: str):
+def get_signal_frame(wave_scores: dict, direction: str, max_maturity: float = 0.75):
     """
     Find the signal frame — lowest TF with a fresh impulse
     in the trade direction.
@@ -92,9 +97,9 @@ def get_signal_frame(wave_scores: dict, direction: str):
     if not target:
         return None
 
-    for tf in ["M5", "M15", "M1"]:
+    for tf in ["M5", "M15", "M1", "H1"]:
         ws = wave_scores.get(tf)
-        if ws and ws.state == target and ws.maturity < 0.60:
+        if ws and ws.state == target and ws.maturity < max_maturity:
             return ws
     return None
 

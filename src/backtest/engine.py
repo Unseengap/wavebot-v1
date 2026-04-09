@@ -366,7 +366,8 @@ class BacktestEngine:
             return
 
         # Signal frame
-        sig = get_signal_frame(wave_scores, direction)
+        max_mat = self.config.get("max_entry_maturity", 0.75)
+        sig = get_signal_frame(wave_scores, direction, max_mat)
         if sig is None:
             self._diag["no_signal_frame"] += 1
             # Log why no signal frame was found
