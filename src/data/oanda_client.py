@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 
 class OandaClient:
-    MAX_CANDLES = 5000
+    MAX_CANDLES = 500
 
     def __init__(self, api_token: str, account_id: str,
                  environment: str = "practice"):
@@ -69,7 +69,6 @@ class OandaClient:
                 instrument, granularity,
                 from_time=params_from,
                 to_time=end,
-                count=self.MAX_CANDLES,
             )
 
             if not candles:
