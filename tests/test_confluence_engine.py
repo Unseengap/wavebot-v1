@@ -30,7 +30,7 @@ class TestDirectionalGate:
         assert get_directional_gate(scores) == "BEARISH"
 
     def test_neutral_low_conviction(self):
-        scores = {"D": _ws(direction=0.5, conviction=0.2, granularity="D")}
+        scores = {"D": _ws(direction=0.5, conviction=0.1, granularity="D")}
         assert get_directional_gate(scores) == "NEUTRAL"
 
     def test_no_daily_is_neutral(self):

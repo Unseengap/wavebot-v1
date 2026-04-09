@@ -32,9 +32,9 @@ def get_directional_gate(wave_scores: dict) -> str:
     else:
         bias = d_score.direction * d_score.conviction
 
-    if bias > 0.3:
+    if bias > 0.15:
         return "BULLISH"
-    elif bias < -0.3:
+    elif bias < -0.15:
         return "BEARISH"
     return "NEUTRAL"
 
@@ -94,7 +94,7 @@ def get_signal_frame(wave_scores: dict, direction: str):
 
     for tf in ["M5", "M15", "M1"]:
         ws = wave_scores.get(tf)
-        if ws and ws.state == target and ws.maturity < 0.40:
+        if ws and ws.state == target and ws.maturity < 0.60:
             return ws
     return None
 

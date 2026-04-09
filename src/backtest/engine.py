@@ -158,6 +158,33 @@ class BacktestEngine:
         self.closed_trades = []
         self.trade_counter = 0
         self.current_day = None
+        self.verbose = config.get("verbose", True)
+
+        # Diagnostic counters for entry rejection tracking
+        self._diag = {
+            "circuit_blocked": 0,
+            "gate_neutral": 0,
+            "score_zero": 0,
+            "gate_misalign": 0,
+            "no_signal_frame": 0,
+            "dead_zone": 0,
+            "sl_too_tight": 0,
+            "sl_too_wide": 0,
+            "rr_too_low": 0,
+            "entry_filter_fail": 0,
+            "entry_filter_reasons": {},
+            "passed_all": 0,
+        }
+        # Sample logs — capture first N detailed rejection logs per category
+        self._log_samples = {}
+        self._log_sample_limit = 3
+
+    def _log_sample(self, category: str, msg: str):
+        """Capture first N log messages per category for later display."""
+        if category not in self._log_samples:
+            self._log_samples[category] = []
+        if len(self._log_samples[category]) < self._log_sample_limit:
+            self._log_samples[category].append(msg)
 
     def run(self, candle_data: dict) -> list:
         """
@@ -214,11 +241,24 @@ class BacktestEngine:
             # 3. Check for entry
             self._check_entry(wave_scores, candle, ts, m5_state, i)
 
-            # Progress
+            # Progress with wave state snapshot
             if (i + 1) % 50000 == 0:
                 pct = (i + 1) / total * 100
-                print(f"  {pct:.0f}% complete | Trades: {len(self.closed_trades)} closed, "
+                print(f"\n  [{pct:.0f}%] Candle {i+1:,}/{total:,} | "
+                      f"Trades: {len(self.closed_trades)} closed, "
                       f"{len(self.open_trades)} open | Balance: ${self.balance:,.2f}")
+                # Wave state snapshot across all timeframes
+                for tf in timeframes:
+                    ws = wave_scores.get(tf)
+                    if ws:
+                        print(f"    {tf:4s}: {ws.state:25s} dir={ws.direction:+.1f} "
+                              f"conv={ws.conviction:.3f} mat={ws.maturity:.3f}")
+                    else:
+                        print(f"    {tf:4s}: (no score)")
+                gate = get_directional_gate(wave_scores)
+                score = calculate_confluence_score(wave_scores)
+                print(f"    Gate={gate}  ConfScore={score:+.4f}  "
+                      f"AmpTracker(M5)={self.amplitude_tracker.get_count(self.instrument, 'M5')} waves recorded")
 
         # Close any remaining open trades at last price
         if self.open_trades:
@@ -228,17 +268,74 @@ class BacktestEngine:
             self.open_trades.clear()
 
         print(f"\nBacktest complete: {len(self.closed_trades)} trades")
+
+        # Print diagnostics
+        d = self._diag
+        total_checks = sum(v for k, v in d.items()
+                           if k not in ("entry_filter_reasons",))
+        if total_checks > 0:
+            print(f"\n{'='*65}")
+            print(f"  ENTRY DIAGNOSTICS ({total_checks:,} candles evaluated)")
+            print(f"{'='*65}")
+            for reason, count in sorted(
+                ((k, v) for k, v in d.items()
+                 if k != "entry_filter_reasons" and v > 0),
+                key=lambda x: -x[1]
+            ):
+                bar = "█" * max(1, int(count / total_checks * 40))
+                print(f"  {reason:25s}: {count:>8,}  ({count/total_checks*100:5.1f}%) {bar}")
+
+            # Entry filter sub-reasons
+            if d["entry_filter_reasons"]:
+                print(f"\n  --- Entry Filter Sub-Reasons ---")
+                for sub_reason, cnt in sorted(d["entry_filter_reasons"].items(),
+                                               key=lambda x: -x[1]):
+                    print(f"    {sub_reason:40s}: {cnt:>6,}")
+
+            # Sample logs per category
+            if self._log_samples:
+                print(f"\n  --- Sample Rejections (first {self._log_sample_limit} per type) ---")
+                for cat, msgs in self._log_samples.items():
+                    print(f"\n  [{cat}]")
+                    for msg in msgs:
+                        print(f"    {msg}")
+
+            # Amplitude tracker summary
+            print(f"\n  --- Wave Amplitude Stats ---")
+            for tf in ["M5", "M15", "H1", "H4", "D"]:
+                cnt = self.amplitude_tracker.get_count(self.instrument, tf)
+                if cnt > 0:
+                    amp = self.amplitude_tracker.get_amplitude_stats(self.instrument, tf)
+                    dur = self.amplitude_tracker.get_duration_stats(self.instrument, tf)
+                    print(f"    {tf:4s}: {cnt:>4} waves | "
+                          f"amp p50={amp['p50']:.1f} p75={amp['p75']:.1f} pips | "
+                          f"dur p50={dur['p50_candles']} candles")
+                else:
+                    print(f"    {tf:4s}: no waves recorded")
+
+            print(f"{'='*65}")
+
         return self.closed_trades
 
     def _check_entry(self, wave_scores, candle, timestamp, m5_state, candle_idx):
         # Circuit breaker
         allowed, reason = self.circuit.check(self.balance, len(self.open_trades))
         if not allowed:
+            self._diag["circuit_blocked"] += 1
+            self._log_sample("circuit_blocked",
+                f"{timestamp} | {reason} | balance=${self.balance:,.2f}")
             return
 
         # Stage 1: Directional gate
         gate = get_directional_gate(wave_scores)
         if gate == "NEUTRAL":
+            self._diag["gate_neutral"] += 1
+            d_ws = wave_scores.get("D")
+            w_ws = wave_scores.get("W")
+            d_info = f"D={d_ws.state} dir={d_ws.direction:+.1f} conv={d_ws.conviction:.3f}" if d_ws else "D=None"
+            w_info = f"W={w_ws.state} dir={w_ws.direction:+.1f} conv={w_ws.conviction:.3f}" if w_ws else "W=None"
+            self._log_sample("gate_neutral",
+                f"{timestamp} | {d_info} | {w_info}")
             return
 
         # Stage 2: Confluence score
@@ -247,17 +344,46 @@ class BacktestEngine:
         # Determine direction
         direction = "LONG" if score > 0 else "SHORT" if score < 0 else None
         if direction is None:
+            self._diag["score_zero"] += 1
+            tf_detail = " | ".join(
+                f"{tf}={ws.state[:8]} d={ws.direction:+.1f} c={ws.conviction:.2f}"
+                for tf, ws in wave_scores.items() if ws
+            )
+            self._log_sample("score_zero",
+                f"{timestamp} | gate={gate} score={score:.4f} | {tf_detail}")
             return
 
         # Enforce gate alignment
         if direction == "LONG" and gate == "BEARISH" and abs(score) < 0.85:
+            self._diag["gate_misalign"] += 1
+            self._log_sample("gate_misalign",
+                f"{timestamp} | LONG vs BEARISH gate | score={score:+.4f} (need >0.85)")
             return
         if direction == "SHORT" and gate == "BULLISH" and abs(score) < 0.85:
+            self._diag["gate_misalign"] += 1
+            self._log_sample("gate_misalign",
+                f"{timestamp} | SHORT vs BULLISH gate | score={score:+.4f} (need >0.85)")
             return
 
         # Signal frame
         sig = get_signal_frame(wave_scores, direction)
         if sig is None:
+            self._diag["no_signal_frame"] += 1
+            # Log why no signal frame was found
+            sig_detail = []
+            target = "BULLISH_IMPULSE" if direction == "LONG" else "BEARISH_IMPULSE"
+            for tf in ["M5", "M15", "M1"]:
+                ws = wave_scores.get(tf)
+                if ws:
+                    reason_str = ""
+                    if ws.state != target:
+                        reason_str = f"state={ws.state}"
+                    elif ws.maturity >= 0.60:
+                        reason_str = f"maturity={ws.maturity:.2f}>=0.60"
+                    sig_detail.append(f"{tf}:{reason_str or 'OK?'}")
+            self._log_sample("no_signal_frame",
+                f"{timestamp} | dir={direction} gate={gate} score={score:+.4f} | "
+                + " | ".join(sig_detail))
             return
 
         # Session
@@ -265,6 +391,9 @@ class BacktestEngine:
         session = get_session(hour)
         session_mult = get_session_size_multiplier(session)
         if session_mult <= 0:
+            self._diag["dead_zone"] += 1
+            self._log_sample("dead_zone",
+                f"{timestamp} | hour={hour} session={session}")
             return
 
         # Spread check
@@ -297,8 +426,15 @@ class BacktestEngine:
 
         # Validate SL distance
         if sl_dist < 3:
+            self._diag["sl_too_tight"] += 1
+            self._log_sample("sl_too_tight",
+                f"{timestamp} | {direction} sl_dist={sl_dist:.1f} pips | "
+                f"entry={entry_price:.5f} sl={sl:.5f} origin={sig.wave_origin:.5f}")
             return  # Too tight
         if not validate_sl_distance(sl_dist, atr_pips):
+            self._diag["sl_too_wide"] += 1
+            self._log_sample("sl_too_wide",
+                f"{timestamp} | {direction} sl_dist={sl_dist:.1f} > {atr_pips:.1f}*3 ATR pips")
             return
 
         # TP from amplitude projection
@@ -321,6 +457,14 @@ class BacktestEngine:
         )
 
         if not can_enter:
+            self._diag["entry_filter_fail"] += 1
+            for f in fails:
+                key = f.split("(")[0].split("<")[0].split(">")[0].strip()[:40]
+                self._diag["entry_filter_reasons"][key] = \
+                    self._diag["entry_filter_reasons"].get(key, 0) + 1
+            self._log_sample("entry_filter_fail",
+                f"{timestamp} | {direction} gate={gate} score={score:+.4f} "
+                f"rr={rr:.2f} spread={spread:.1f} | FAILS: {'; '.join(fails)}")
             return
 
         # Position size
@@ -331,6 +475,8 @@ class BacktestEngine:
         units = apply_session_to_position_size(base_units, session_mult)
         if units <= 0:
             return
+
+        self._diag["passed_all"] += 1
 
         # Open trade
         self.trade_counter += 1
@@ -354,6 +500,15 @@ class BacktestEngine:
             "max_adverse_pips": 0.0,
         }
         self.open_trades.append(trade)
+
+        if self.verbose:
+            print(f"\n  ▶ TRADE #{self.trade_counter} OPENED | {timestamp}")
+            print(f"    {direction} {self.instrument} @ {entry_price:.5f} | "
+                  f"{units:,} units | SL={sl:.5f} TP={tp:.5f}")
+            print(f"    R:R={rr:.2f} | SL dist={sl_dist:.1f} pips | "
+                  f"score={score:+.4f} | gate={gate} | session={session}")
+            print(f"    signal_frame={sig.granularity} mat={sig.maturity:.3f} | "
+                  f"spread={spread:.1f} pips")
 
     def _update_trades(self, candle, timestamp):
         high = candle["high_mid"]
@@ -437,3 +592,11 @@ class BacktestEngine:
         self.balance += pnl_dollars
         self.peak_balance = max(self.peak_balance, self.balance)
         self.closed_trades.append(trade)
+
+        if self.verbose:
+            icon = "✅" if pnl_pips > 0 else "❌"
+            print(f"  {icon} TRADE #{trade['id']} CLOSED by {reason} | {exit_time}")
+            print(f"    {d} {trade['instrument']} entry={trade['entry_price']:.5f} "
+                  f"exit={exit_final:.5f} | "
+                  f"P&L={pnl_pips:+.1f} pips (${pnl_dollars:+,.2f}) | "
+                  f"Balance=${self.balance:,.2f}")
