@@ -35,7 +35,8 @@ class OandaClient:
             params["includeFirst"] = "true"
         if to_time:
             params["to"] = to_time
-        if count and not (from_time and to_time):
+        # OANDA rejects count + from + to together, and caps count at 5000
+        if count and not to_time:
             params["count"] = min(count, self.MAX_CANDLES)
 
         resp = requests.get(url, headers=self.headers, params=params)
