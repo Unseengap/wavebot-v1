@@ -13,7 +13,7 @@ venv/
 env/
 
 # Data — too large for GitHub
-data/
+
 *.db
 *.sqlite
 *.parquet
