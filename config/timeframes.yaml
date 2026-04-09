@@ -1,0 +1,23 @@
+hierarchy:
+  M5:
+    entry_weight: 2.0
+    role: entry
+  M15:
+    entry_weight: 3.5
+    role: entry
+  H1:
+    entry_weight: 5.0
+    role: confirmation
+  H4:
+    entry_weight: 7.0
+    role: confirmation
+  D:
+    role: context_gate
+  W:
+    role: context_gate
+
+confluence:
+  min_score_to_enter: 0.65
+  min_frames_aligned: 2
+  require_h1_alignment: true
+  counter_gate_override: 0.85

@@ -1,0 +1,36 @@
+# Environment and secrets
+.env
+*.env
+config/secrets.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+
+# Data — too large for GitHub
+data/
+*.db
+*.sqlite
+*.parquet
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Reports
+reports/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Drive mount artifacts
+drive/
