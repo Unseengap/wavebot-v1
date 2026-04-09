@@ -129,7 +129,7 @@ class TestV3BacktestEngine:
         engine = V3BacktestEngine()
         trades = engine.run(h4, daily)
 
-        valid_reasons = {"TRAILING_SL", "OPPOSITE_PATTERN", "FLIP_SIGNAL",
+        valid_reasons = {"OPPOSITE_PATTERN", "FLIP_SIGNAL",
                          "SIGNAL_EXIT", "END_OF_TEST"}
         for t in trades:
             assert t["exit_reason"] in valid_reasons, f"Bad exit reason: {t['exit_reason']}"

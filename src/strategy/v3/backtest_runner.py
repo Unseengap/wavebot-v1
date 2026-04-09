@@ -1,11 +1,9 @@
 """V3 backtest engine — runs Swing Reversal V3 strategy against historical 4H/D candle data."""
-import numpy as np
 import pandas as pd
 from typing import Optional
 
 from src.strategy.v3.types import CandleSnapshot, V3Trade
 from src.strategy.v3.engine import SwingReversalV3
-from src.strategy.v3.trailing_stop import calculate_atr
 from src.risk.position_sizer import calculate_position_size
 from src.risk.circuit_breaker import CircuitBreaker
 
@@ -13,8 +11,8 @@ from src.risk.circuit_breaker import CircuitBreaker
 class V3BacktestEngine:
     """
     Iterate on 4H candles as the primary loop.
-    Update trailing stops on every 4H candle close.
     Track daily context from D candles.
+    No stop loss or trailing stop — exits only via opposite signal or flip.
     Output trade dicts compatible with src/backtest/metrics.calculate_metrics().
     """
 
@@ -25,15 +23,13 @@ class V3BacktestEngine:
         pip_value_per_unit: float = 0.0001,
         initial_balance: float = 10000.0,
         risk_fraction: float = 0.01,
-        atr_period: int = 14,
-        atr_multiplier: float = 2.0,
-        sl_buffer_pips: float = 2.0,
         min_body_ratio: float = 0.3,
         max_open_v3_trades: int = 2,
         max_double_downs: int = 1,
         double_down_enabled: bool = True,
         max_daily_drawdown: float = 0.02,
         max_total_drawdown: float = 0.08,
+        default_sl_pips: float = 50.0,
     ):
         self.instrument = instrument
         self.pip_size = pip_size
@@ -41,16 +37,13 @@ class V3BacktestEngine:
         self.initial_balance = initial_balance
         self.balance = initial_balance
         self.risk_fraction = risk_fraction
-        self.atr_period = atr_period
         self.max_open = max_open_v3_trades
+        self.default_sl_pips = default_sl_pips
 
         self.strategy = SwingReversalV3(
             instrument=instrument,
             pip_size=pip_size,
             pip_value=pip_value_per_unit,
-            atr_period=atr_period,
-            atr_multiplier=atr_multiplier,
-            sl_buffer_pips=sl_buffer_pips,
             min_body_ratio=min_body_ratio,
             max_double_downs=max_double_downs,
             double_down_enabled=double_down_enabled,
@@ -82,11 +75,6 @@ class V3BacktestEngine:
         Returns:
             List of closed trade dicts (compatible with metrics.calculate_metrics)
         """
-        # Pre-compute arrays for ATR
-        h4_highs = h4_candles["high"].values.astype(float)
-        h4_lows = h4_candles["low"].values.astype(float)
-        h4_closes = h4_candles["close"].values.astype(float)
-
         # Build daily lookup: date_str → CandleSnapshot
         daily_map: dict[str, CandleSnapshot] = {}
         if d_candles is not None and not d_candles.empty:
@@ -124,19 +112,18 @@ class V3BacktestEngine:
                 if day_str in daily_map:
                     self.strategy.get_daily_context(daily_map[day_str])
 
-            # 1. Update open trades: check SL hit + trailing stop + MFE/MAE
-            current_atr = self._compute_atr(h4_highs, h4_lows, h4_closes, idx)
-            self._update_open_trades(candle, current_atr, idx)
+            # 1. Update open trades: track MFE/MAE
+            self._update_open_trades(candle)
 
             # 2. Get strategy actions
             actions = self.strategy.on_h4_candle_close(
-                candle, self.open_trades, current_atr
+                candle, self.open_trades
             )
 
             # 3. Execute actions
             daily_context = self._get_context_for_day(day_str, daily_map)
             for action in actions:
-                self._execute_action(action, candle, current_atr, idx, daily_context)
+                self._execute_action(action, candle, candle_idx=idx, daily_context=daily_context)
 
         # Close remaining trades at end of test
         for trade in list(self.open_trades):
@@ -151,9 +138,9 @@ class V3BacktestEngine:
         return [t.to_dict() for t in self.closed_trades]
 
     def _update_open_trades(
-        self, candle: CandleSnapshot, current_atr: float, candle_idx: int
+        self, candle: CandleSnapshot,
     ) -> None:
-        """Check SL hits, update trailing stops, track MFE/MAE."""
+        """Track MFE/MAE for open trades."""
         for trade in list(self.open_trades):
             trade.bars_in_trade += 1
 
@@ -168,28 +155,10 @@ class V3BacktestEngine:
             trade.max_favorable_pips = max(trade.max_favorable_pips, favorable)
             trade.max_adverse_pips = max(trade.max_adverse_pips, adverse)
 
-            # Update trailing stop
-            active_sl = trade.trailing_sl if trade.trailing_sl else trade.stop_loss
-            new_sl = self.strategy.trailing.update(
-                direction=trade.direction,
-                current_price=candle.close,
-                current_atr=current_atr,
-                current_stop=active_sl,
-            )
-            trade.trailing_sl = new_sl
-            trade.trailing_sl_history.append(new_sl)
-
-            # Check if SL hit during this candle
-            if trade.direction == "LONG" and candle.low <= new_sl:
-                self._close_trade(trade, new_sl, candle.time, "TRAILING_SL")
-            elif trade.direction == "SHORT" and candle.high >= new_sl:
-                self._close_trade(trade, new_sl, candle.time, "TRAILING_SL")
-
     def _execute_action(
         self,
         action,
         candle: CandleSnapshot,
-        current_atr: float,
         candle_idx: int,
         daily_context: str,
     ) -> None:
@@ -212,12 +181,8 @@ class V3BacktestEngine:
 
         elif action.type in ("OPEN_LONG", "OPEN_SHORT"):
             direction = "LONG" if action.type == "OPEN_LONG" else "SHORT"
-            sl = action.data["stop_loss"]
             entry = action.data["entry_price"]
-            sl_dist_pips = abs(entry - sl) / self.pip_size
-
-            if sl_dist_pips <= 0:
-                return
+            sl_dist_pips = self.default_sl_pips
 
             units = calculate_position_size(
                 self.balance, self.risk_fraction, sl_dist_pips, self.pip_value_per_unit
@@ -234,19 +199,18 @@ class V3BacktestEngine:
                 entry_price=entry,
                 entry_time=candle.time,
                 units=units,
-                stop_loss=sl,
+                stop_loss=None,
                 take_profit=None,
                 signal_frame="H4",
                 confluence_score=0.0,
                 session="",
                 sl_distance_pips=sl_dist_pips,
-                rr_target=0.0,  # No fixed TP
+                rr_target=0.0,
                 entry_candle_idx=candle_idx,
                 pattern=pattern,
                 confirmation_type=pattern.confirmation_type if pattern else "",
                 daily_context=daily_context,
                 reference_candle_close=action.data.get("reference_close", entry),
-                trailing_sl=sl,
             )
             self.open_trades.append(trade)
 
@@ -255,11 +219,8 @@ class V3BacktestEngine:
             if not original:
                 return
 
-            sl = action.data["stop_loss"]
             entry = action.data["entry_price"]
-            sl_dist_pips = abs(entry - sl) / self.pip_size
-            if sl_dist_pips <= 0:
-                return
+            sl_dist_pips = self.default_sl_pips
 
             units = calculate_position_size(
                 self.balance, self.risk_fraction, sl_dist_pips, self.pip_value_per_unit
@@ -276,7 +237,7 @@ class V3BacktestEngine:
                 entry_price=entry,
                 entry_time=candle.time,
                 units=units,
-                stop_loss=sl,
+                stop_loss=None,
                 take_profit=None,
                 signal_frame="H4",
                 confluence_score=0.0,
@@ -289,7 +250,6 @@ class V3BacktestEngine:
                 daily_context=daily_context,
                 reference_candle_close=action.data.get("reference_close", entry),
                 double_down_count=original.double_down_count + 1,
-                trailing_sl=sl,
             )
             original.double_down_count += 1
             self.open_trades.append(trade)
@@ -324,22 +284,6 @@ class V3BacktestEngine:
             if t.id == trade_id:
                 return t
         return None
-
-    def _compute_atr(
-        self,
-        highs: np.ndarray,
-        lows: np.ndarray,
-        closes: np.ndarray,
-        current_idx: int,
-    ) -> float:
-        """Compute ATR up to (and including) current candle index."""
-        start = max(0, current_idx - self.atr_period - 1)
-        end = current_idx + 1
-        if end - start < 2:
-            return 0.0
-        return calculate_atr(
-            highs[start:end], lows[start:end], closes[start:end], self.atr_period
-        )
 
     def _get_context_for_day(
         self, day_str: str, daily_map: dict[str, CandleSnapshot]
