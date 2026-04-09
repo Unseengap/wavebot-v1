@@ -55,6 +55,7 @@ class OandaClient:
                       start: str, end: str = None) -> pd.DataFrame:
         """
         Download full date range with automatic pagination.
+        Uses from + count (not to) to avoid OANDA's range limit.
         Returns DataFrame with mid, bid, ask OHLC columns.
         """
         all_candles = []
@@ -63,21 +64,28 @@ class OandaClient:
 
         while True:
             page += 1
-            params_from = current_start
 
             candles = self.get_candles(
                 instrument, granularity,
-                from_time=params_from,
-                to_time=end,
+                from_time=current_start,
+                count=self.MAX_CANDLES,
             )
 
             if not candles:
                 break
 
+            # Filter by end time if specified
+            if end:
+                candles = [c for c in candles if c["time"] <= end]
+
             complete = [c for c in candles if c.get("complete", False)]
             all_candles.extend(complete)
 
+            # Stop if we got fewer than requested (no more data)
+            # or if we filtered down due to end time
             if len(candles) < self.MAX_CANDLES:
+                break
+            if end and candles and candles[-1]["time"] >= end:
                 break
 
             last_time = candles[-1]["time"]
