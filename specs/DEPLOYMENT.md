@@ -1,414 +1,395 @@
-# DEPLOYMENT.md — VS Code, GitHub, Colab & Live Rollout
+# DEPLOYMENT.md — Vultr VPS Deployment Guide
 
-## Development Environment
+## Overview
 
-### Required Tools
+OandaFX runs as a persistent process on a Vultr Cloud Compute instance. The bot is managed by `systemd` for automatic restarts, containerized with Docker for reproducibility, and monitored via a FastAPI dashboard. This guide covers full server setup from a fresh Vultr instance.
 
+---
+
+## Recommended Vultr Configuration
+
+| Setting | Recommendation |
+|---------|---------------|
+| Plan | Cloud Compute — Regular Performance |
+| vCPU | 2 vCPU (minimum), 4 vCPU (recommended for 5+ accounts) |
+| RAM | 4 GB (minimum), 8 GB (recommended) |
+| Storage | 80 GB NVMe SSD |
+| OS | Ubuntu 22.04 LTS x64 |
+| Region | New York (NJ) — closest to OANDA's US servers |
+| IPv4 | Yes (static IP for firewall whitelisting) |
+| Backups | Enable Vultr automatic backups |
+| DDoS Protection | Enable |
+
+**Estimated cost:** $24–$48/month depending on plan selected.
+
+**Why Vultr over AWS/GCP:** Lower latency to OANDA's New York trading servers, predictable pricing, and simpler networking setup for a single-purpose trading server.
+
+---
+
+## Step 1: Initial Server Setup
+
+SSH into your new Vultr instance as root:
+
+```bash
+ssh root@YOUR_VPS_IP
 ```
-VS Code                  — Primary IDE
-Python 3.10+             — Runtime
-Git + GitHub             — Version control + CI
-Google Colab             — GPU for optimization (Phase 8 if needed)
-OANDA fxTrade Practice   — Paper trading (before any live capital)
-OANDA fxTrade Live       — Live trading (after paper trading validation)
+
+### Create a non-root user
+
+```bash
+adduser botuser
+usermod -aG sudo botuser
+# Switch to the new user for all subsequent steps
+su - botuser
 ```
 
-### VS Code Extensions (Recommended)
+### System updates
 
-```
-Python (Microsoft)
-Pylance (Microsoft)
-Jupyter (Microsoft)     — For notebooks
-GitLens                 — Git history in editor
-Python Test Explorer    — Run pytest from sidebar
-YAML (Red Hat)          — Config file editing
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl wget htop ufw fail2ban
 ```
 
-### Python Dependencies
+### Configure firewall
 
-```txt
-# requirements.txt
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh                    # Port 22
+sudo ufw allow 8080/tcp               # Bot monitoring dashboard
+sudo ufw enable
+sudo ufw status
+```
 
-# OANDA API
-oandapyV20>=0.7.2
+### Configure fail2ban (brute force protection)
 
-# Data processing
-numpy>=1.24.0
-pandas>=2.0.0
-
-# Storage
-sqlalchemy>=2.0.0
-
-# Configuration
-pyyaml>=6.0
-python-dotenv>=1.0.0
-
-# Visualization (notebooks only)
-matplotlib>=3.7.0
-plotly>=5.15.0
-jupyter>=1.0.0
-
-# Backtesting optimization
-optuna>=3.0.0          # Bayesian parameter search (optional)
-
-# Utilities
-pytz>=2023.3
-requests>=2.31.0
-structlog>=23.1.0      # Structured JSON logging
-
-# Testing
-pytest>=7.4.0
-pytest-cov>=4.1.0
-
-# Type checking
-mypy>=1.5.0
+```bash
+sudo systemctl enable fail2ban
+sudo systemctl start fail2ban
 ```
 
 ---
 
-## GitHub Repository Setup
-
-### Repository Structure
+## Step 2: Install Python & Dependencies
 
 ```bash
-# Initialize
-git init
-git remote add origin https://github.com/YOUR_USERNAME/forex-wave-bot.git
+# Install Python 3.11
+sudo apt install -y python3.11 python3.11-venv python3.11-dev python3-pip
 
-# Branch strategy
-main           — Production-ready code only
-develop        — Integration branch
-feature/*      — Individual feature branches
-backtest/*     — Backtest experiment branches
+# Verify
+python3.11 --version
+
+# Install system dependencies for TA-Lib
+sudo apt install -y build-essential libta-lib-dev libhdf5-dev libssl-dev
 ```
 
-### .gitignore
+### Install Docker (optional but recommended)
 
-```gitignore
-# Environment and secrets — NEVER commit these
-.env
-*.env
-config/secrets.yaml
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-venv/
-env/
-
-# Data — too large for GitHub
-data/
-*.db
-*.sqlite
-*.parquet
-*.csv
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# Reports — local only
-reports/
-
-# IDE
-.vscode/settings.json
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-```
-
-### GitHub Actions CI
-
-```yaml
-# .github/workflows/test.yml
-name: WaveBot Tests
-
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-
-      - name: Run tests
-        run: |
-          pytest tests/ -v --cov=src --cov-report=term-missing
-
-      - name: Check coverage
-        run: |
-          pytest tests/ --cov=src --cov-fail-under=80
+```bash
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker botuser
+newgrp docker
+docker --version
 ```
 
 ---
 
-## Google Colab Setup
+## Step 3: Clone the Repository
 
-### Data Collection Notebook
-
-The data collection notebook runs on Colab free tier (no GPU needed for data pulls). Mount Google Drive to persist the SQLite database between sessions.
-
-```python
-# notebooks/01_data_collection.ipynb
-
-# Cell 1: Mount Drive
-from google.colab import drive
-drive.mount('/content/drive')
-
-# Cell 2: Install dependencies
-!pip install oandapyV20 sqlalchemy python-dotenv -q
-
-# Cell 3: Clone repo
-!git clone https://github.com/YOUR_USERNAME/forex-wave-bot.git
-%cd forex-wave-bot
-
-# Cell 4: Set credentials (use Colab secrets, not .env)
-import os
-os.environ["OANDA_API_TOKEN"] = "your_token"
-os.environ["OANDA_ACCOUNT_ID"] = "your_account"
-os.environ["OANDA_ENVIRONMENT"] = "practice"
-
-# Cell 5: Run collection
-from src.data.data_collector import DataCollector
-
-collector = DataCollector(db_path="/content/drive/MyDrive/wavebot/data.db")
-
-pairs = ["EUR_USD", "GBP_USD", "USD_JPY", "USD_CAD", "AUD_USD"]
-timeframes = ["M1", "M5", "M15", "H1", "H4", "D"]
-
-for pair in pairs:
-    for tf in timeframes:
-        print(f"Collecting {pair} {tf}...")
-        collector.collect_range(pair, tf, start="2018-01-01")
-        print(f"  ✓ Done")
+```bash
+cd /home/botuser
+git clone https://github.com/your-org/oandafx.git
+cd oandafx
 ```
 
-### Walk-Forward Optimization on GPU
+### Set up Python virtual environment
 
-GPU acceleration is useful for Bayesian parameter optimization (Phase 8 RL training, or if optuna search space is large).
+```bash
+python3.11 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-```python
-# notebooks/04_backtest_analysis.ipynb
+### Verify OANDA API connectivity
 
-# Colab GPU setup
-!nvidia-smi  # Confirm GPU available
-
-# Run walk-forward with GPU-accelerated optuna
-from src.backtest.engine import WalkForwardValidator
-import optuna
-
-optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-validator = WalkForwardValidator(
-    data_path="/content/drive/MyDrive/wavebot/data.db"
-)
-
-results = validator.run(
-    instrument="EUR_USD",
-    full_start="2018-01-01",
-    full_end="2023-12-31",
-    train_months=6,
-    test_months=2,
-)
-
-print(results.summary())
-results.save("/content/drive/MyDrive/wavebot/reports/")
+```bash
+python scripts/verify_connection.py
+# Should print: "✅ All accounts connected successfully"
 ```
 
 ---
 
-## Deployment Phases
-
-### Phase 1: Practice API — Paper Trading
-
-Run the bot against OANDA's practice environment. The practice API is **identical** to live in behavior — same endpoints, same latency, same order types. The only difference is the money is simulated.
+## Step 4: Configure Credentials
 
 ```bash
-# Set environment to practice
-OANDA_ENVIRONMENT=practice
+# Copy example configs
+cp config/accounts.yaml.example config/accounts.yaml
+cp config/bot_config.yaml.example config/bot_config.yaml
+cp .env.example .env
 
-# Run bot in paper mode
-python main.py \
-  --mode paper \
-  --pairs EUR_USD,GBP_USD,USD_JPY \
-  --timeframes M5,M15,H1,H4 \
-  --log-level INFO
-```
+# Edit with your real credentials
+nano config/accounts.yaml     # Add your OANDA API keys and account IDs
+nano config/bot_config.yaml   # Set pairs, timeframes, strategy
+nano .env                     # Set Telegram bot token, email, etc.
 
-**Paper trading duration: Minimum 4 weeks, ideally 6–8 weeks.**
-
-During this period, verify:
-- Wave detection matches visual chart analysis (spot-check manually)
-- Orders place and fill as expected on practice account
-- Risk calculations match theoretical values
-- Circuit breakers fire correctly in test scenarios
-- Spread filter works (manually widen spread in config to test rejection)
-- No memory leaks (run `top` or Activity Monitor while bot runs)
-
-### Phase 2: Live — Micro Lots Only
-
-After passing paper trading validation:
-
-```bash
-OANDA_ENVIRONMENT=live
-```
-
-Start with 0.01 lots (1,000 units) per trade regardless of account size. This is not about the money — it is about verifying that the live API behavior matches the practice API behavior. Run at micro lot size for two weeks.
-
-Verify:
-- Fills occur at expected prices (compare to practice fills)
-- Spreads match expectations
-- SL and TP orders are attached correctly
-- Transaction logs match OANDA's transaction history
-
-### Phase 3: Live — Full Risk
-
-After two weeks of verified micro lot behavior, scale to normal position sizing (1% risk per trade).
-
-```python
-# config/risk.yaml
-risk:
-  max_risk_per_trade: 0.01   # 1% — now active at full size
+# Secure the credentials file
+chmod 600 config/accounts.yaml
+chmod 600 .env
 ```
 
 ---
 
-## Running the Bot
+## Step 5: Download Historical Data
 
-### main.py Entry Point
-
-```python
-# main.py
-import sys
-import signal
-import argparse
-from src.bot import WaveBot
-from src.utils.logger import setup_logger
-from src.utils.config import load_config
-
-def main():
-    parser = argparse.ArgumentParser(description="WaveBot — OANDA Wave Trading System")
-    parser.add_argument("--mode", choices=["paper", "live", "backtest"], default="paper")
-    parser.add_argument("--pairs", default="EUR_USD,GBP_USD,USD_JPY")
-    parser.add_argument("--timeframes", default="M5,M15,H1,H4")
-    parser.add_argument("--log-level", default="INFO")
-    args = parser.parse_args()
-
-    log = setup_logger(args.log_level)
-    config = load_config()
-
-    bot = WaveBot(
-        mode=args.mode,
-        pairs=args.pairs.split(","),
-        timeframes=args.timeframes.split(","),
-        config=config,
-    )
-
-    # Graceful shutdown on Ctrl+C
-    def shutdown(sig, frame):
-        log.info("Shutdown signal received — closing gracefully")
-        bot.shutdown()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-
-    log.info(f"WaveBot starting — mode={args.mode}, pairs={args.pairs}")
-    bot.run()
-
-if __name__ == "__main__":
-    main()
-```
-
-### Keeping the Bot Running (Linux / Mac)
+This only needs to be done once. Subsequent updates are incremental.
 
 ```bash
-# Run as background process with logging
-nohup python main.py --mode live > logs/wavebot.log 2>&1 &
+source venv/bin/activate
 
-# Check if running
-ps aux | grep main.py
+python scripts/download_history.py \
+  --pairs EUR_USD GBP_USD USD_JPY AUD_USD USD_CHF USD_CAD NZD_USD \
+  --granularities M15 H1 H4 D \
+  --start 2010-01-01 \
+  --output-dir data/raw \
+  --verbose
 
-# View live logs
-tail -f logs/wavebot.log
-
-# Stop gracefully
-kill -SIGTERM $(cat wavebot.pid)
+# Expected output: ~2-4 GB of Parquet files, takes 20-40 minutes
 ```
 
 ---
 
-## Monitoring
+## Step 6: Upload Trained Model
 
-### Daily Review Checklist
-
-Run this every morning before market open:
+After training on Google Colab (see [TRAINING.md](TRAINING.md)), push the model to GitHub:
 
 ```bash
-# Check last 24h trade log
-python scripts/daily_review.py --date yesterday
-
-# Output:
-# Trades placed: 3
-# Trades closed: 2 (1 TP, 1 SL)
-# Open trades: 1 (EUR_USD LONG, +12 pips)
-# Daily P&L: +$47.20
-# Drawdown today: 0.23%
-# Circuit breaker status: ACTIVE (no limits hit)
-# API errors last 24h: 0
-# Maintenance events: 0
+# On Colab after training
+git add data/models/
+git commit -m "New model v1.0.0 trained on 2010-2024"
+git push origin main
 ```
 
-### Performance Dashboard
+Then on the VPS:
 
 ```bash
-# Run weekly performance report
-python scripts/performance_report.py --period 30d
-
-# Output metrics:
-# Win rate (30d): 61.4%
-# Profit factor: 1.78
-# Total pips: +312
-# Sharpe (annualized): 1.54
-# Max drawdown: 3.2%
-# Best pair: GBP_USD (+142 pips)
-# Worst pair: USD_JPY (-23 pips)
+cd /home/botuser/oandafx
+git pull origin main
 ```
 
 ---
 
-## Safety Checklist Before Going Live
+## Step 7: Run Backtests (Validation)
 
-- [ ] Walk-forward backtest passes all minimum thresholds
-- [ ] Paper traded for minimum 4 weeks
-- [ ] Paper trade metrics match backtest expectations (within 15%)
-- [ ] Circuit breakers tested — confirmed they fire correctly
-- [ ] Emergency close tested — all trades close on breaker trigger
-- [ ] API token is from practice account (practice) or live account (live)
-- [ ] `.env` file is NOT committed to GitHub
-- [ ] `OANDA_ENVIRONMENT` is set correctly
-- [ ] Max position size calculated correctly for account balance
-- [ ] Bot ran continuously for 48h without crash or memory leak
-- [ ] Maintenance window behavior tested — bot resumes correctly
-- [ ] Spread filter tested — entries rejected when spread is high
-- [ ] Trade log writing correctly to SQLite
-- [ ] Transaction sync with OANDA history matches local logs
+Before going live, confirm the model produces expected results on the VPS environment:
+
+```bash
+source venv/bin/activate
+
+python scripts/run_backtest.py \
+  --model data/models/latest/transformer.pt \
+  --start 2023-01-01 \
+  --end 2024-12-31 \
+  --output reports/backtest_validation.html
+
+# Review the report
+cat reports/backtest_validation.html | python -c "import sys; print(sys.stdin.read()[:500])"
+```
+
+---
+
+## Step 8: Set Up systemd Service
+
+This ensures the bot automatically restarts on crash or server reboot.
+
+```bash
+sudo nano /etc/systemd/system/oandafx.service
+```
+
+Paste the following:
+
+```ini
+[Unit]
+Description=OandaFX Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/oandafx
+ExecStart=/home/botuser/oandafx/venv/bin/python scripts/start_bot.py --config config/accounts.yaml
+Restart=on-failure
+RestartSec=30
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Environment
+EnvironmentFile=/home/botuser/oandafx/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=oandafx
+
+# Security
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable oandafx
+sudo systemctl start oandafx
+sudo systemctl status oandafx
+```
+
+View live logs:
+
+```bash
+sudo journalctl -u oandafx -f
+```
+
+---
+
+## Step 9: Set Up Monitoring Dashboard
+
+The bot exposes a FastAPI monitoring dashboard on port 8080.
+
+Access it at: `http://YOUR_VPS_IP:8080`
+
+Available endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Dashboard HTML page |
+| `GET /api/accounts` | All account statuses (JSON) |
+| `GET /api/trades` | All open trades across accounts |
+| `GET /api/performance` | Performance metrics |
+| `GET /api/signals` | Recent model signals |
+| `GET /api/health` | Bot health check |
+| `POST /api/pause/{alias}` | Pause a specific account |
+| `POST /api/resume/{alias}` | Resume a paused account |
+
+To add basic auth to the dashboard:
+
+```bash
+# In .env
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=your-secure-password-here
+```
+
+---
+
+## Step 10: Configure Daily Data Updates (Cron)
+
+```bash
+crontab -e
+```
+
+Add the following lines:
+
+```cron
+# Incremental data update every day at 22:30 UTC (after market close)
+30 22 * * 1-5 /home/botuser/oandafx/venv/bin/python /home/botuser/oandafx/scripts/download_history.py --mode incremental >> /home/botuser/oandafx/data/logs/data_update.log 2>&1
+
+# Daily account reconciliation at 23:00 UTC
+0 23 * * 1-5 /home/botuser/oandafx/venv/bin/python /home/botuser/oandafx/scripts/reconcile.py >> /home/botuser/oandafx/data/logs/reconcile.log 2>&1
+
+# Weekly git pull to get latest model
+0 5 * * 0 cd /home/botuser/oandafx && git pull origin main && sudo systemctl restart oandafx >> /home/botuser/oandafx/data/logs/update.log 2>&1
+```
+
+---
+
+## Docker Deployment (Alternative)
+
+If you prefer Docker over bare-metal systemd:
+
+```bash
+# Build the image
+docker build -t oandafx:latest .
+
+# Run with Docker Compose
+docker-compose up -d
+
+# View logs
+docker-compose logs -f oandafx
+
+# Restart
+docker-compose restart oandafx
+```
+
+`docker-compose.yml` mounts `config/` and `data/` as volumes so credentials and data persist across container restarts.
+
+---
+
+## VPS Maintenance
+
+### Updating the bot
+
+```bash
+sudo systemctl stop oandafx
+cd /home/botuser/oandafx
+git pull origin main
+source venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl start oandafx
+```
+
+### Server resource monitoring
+
+```bash
+# CPU and memory
+htop
+
+# Disk usage
+df -h
+du -sh data/
+
+# Bot process
+ps aux | grep start_bot
+```
+
+### Backup strategy
+
+Vultr automatic backups run daily and retain 7 days. Additionally, push critical data to GitHub:
+
+```bash
+# Exclude raw data (too large) but backup configs and models
+git add config/ data/models/ data/logs/
+git commit -m "Backup $(date +%Y-%m-%d)"
+git push origin main
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Solution |
+|---------|-------------|----------|
+| Bot not starting | Config error | Check `sudo journalctl -u oandafx -n 50` |
+| `401 Unauthorized` | Bad API key | Verify key in OANDA portal, check `accounts.yaml` |
+| `503 Service Unavailable` | OANDA maintenance | Normal — bot retries automatically |
+| `Insufficient margin` | Position too large | Reduce `max_risk_per_trade` in config |
+| High memory usage | Large feature buffer | Reduce `lookback_bars` in `bot_config.yaml` |
+| Dashboard not accessible | Firewall | Run `sudo ufw allow 8080/tcp` |
+| Duplicate orders | Clock drift | Run `sudo ntpdate pool.ntp.org` |
+
+### Check VPS clock sync (critical for order timing)
+
+```bash
+timedatectl status
+# Should show: System clock synchronized: yes
+
+# If not synced:
+sudo apt install -y ntp
+sudo systemctl enable ntp
+sudo systemctl start ntp
+```

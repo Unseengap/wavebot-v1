@@ -1,221 +1,237 @@
-# WaveBot — OANDA Wave-Based Forex Trading System
+# OandaFX — Institutional-Grade Forex Trading Bot
 
-> A precision forex trading bot built exclusively on OANDA's REST API v20.  
-> Architecture is 100% wave-native — no bolted-on indicators, no black-box ML as a first layer.  
-> The market is waves. The model speaks waves.
+> A self-learning, multi-account, multi-pair forex trading system built on OANDA's REST API v20, deployable on Vultr VPS with GPU-assisted model training via Google Colab.
 
 ---
 
-## Philosophy
+## Project Overview
 
-Price does not move randomly. It moves in waves — impulse legs followed by corrections, repeating across every timeframe simultaneously. This bot is built on one core belief:
+OandaFX is a modular, production-ready algorithmic trading system that combines classical technical analysis with modern machine learning. It is designed from the ground up to operate within OANDA's regulatory and API constraints while scaling across multiple accounts, multiple API keys, and unlimited currency pairs and timeframes.
 
-**If you can accurately map the wave state of every timeframe in real time, and understand which timeframes are aligned, you have an edge — before any machine learning is applied.**
-
-Traditional bots apply indicators (RSI, MACD, Bollinger Bands) on top of flat OANDA candle data. Those indicators are derivatives of price. This system works directly with price structure — the peaks, troughs, impulse legs, and corrections that constitute the actual geometry of the market.
-
-The strength hierarchy is the foundation:
-
-```
-M1 < M5 < M15 < M30 < H1 < H4 < D < W < M
-```
-
-A wave signal on a higher timeframe is not "more important" arbitrarily — it is stronger because more capital has committed to it, more time has been spent establishing it, and more participants are required to reverse it. Smaller timeframes do not oppose higher timeframes — they map inside them, providing precision entry into larger moves.
+The system learns how to trade — not just execute rules. It uses reinforcement learning to discover when to enter, where to place stop losses and take profits, how to size positions, and when to stay flat. All training data comes directly from OANDA's historical candle API, ensuring the model trains on the same pricing it will trade live.
 
 ---
 
 ## Repository Structure
 
 ```
-forex-wave-bot/
-│
+oandafx/
 ├── README.md                        ← You are here
-├── SPECS.md                         ← Full technical specification
-├── WAVE_ENGINE.md                   ← Wave detection algorithm spec
-├── STRENGTH_HIERARCHY.md            ← Timeframe weighting system
-├── CONFLUENCE_ENGINE.md             ← Multi-timeframe signal fusion
-├── OANDA_INTEGRATION.md             ← OANDA API rules, limits, compliance
-├── RISK_MANAGEMENT.md               ← SL/TP, position sizing, drawdown
-├── BACKTESTING.md                   ← Walk-forward validation methodology
-├── DEPLOYMENT.md                    ← VS Code, GitHub, Colab, live rollout
-│
+├── docs/
+│   ├── ARCHITECTURE.md              ← System design & module map
+│   ├── DATA_PIPELINE.md             ← OANDA data collection & storage
+│   ├── FEATURE_ENGINEERING.md       ← Indicators, patterns, MTF features
+│   ├── MODEL_SPEC.md                ← ML/RL model architecture
+│   ├── RISK_MANAGEMENT.md           ← SL/TP, position sizing, drawdown
+│   ├── OANDA_COMPLIANCE.md          ← Broker rules, leverage, spreads
+│   ├── MULTI_ACCOUNT.md             ← Multi-API & multi-account setup
+│   ├── DEPLOYMENT.md                ← Vultr VPS deployment guide
+│   ├── TRAINING.md                  ← Colab GPU training workflow
+│   └── MONITORING.md                ← Logging, alerts, dashboards
+├── config/
+│   ├── accounts.yaml.example        ← Account/API key template
+│   └── bot_config.yaml.example      ← Bot strategy config template
 ├── src/
+│   ├── core/
+│   │   ├── account_manager.py       ← Multi-account orchestrator
+│   │   ├── api_client.py            ← OANDA REST v20 wrapper
+│   │   └── session.py               ← Trading session controller
 │   ├── data/
-│   │   ├── oanda_client.py          ← OANDA API wrapper (REST v20)
-│   │   ├── data_collector.py        ← Paginated historical downloader
-│   │   └── stream_handler.py        ← Live price streaming
-│   │
-│   ├── wave/
-│   │   ├── swing_detector.py        ← Peak/trough identification
-│   │   ├── wave_labeler.py          ← Wave state labeling per candle
-│   │   ├── wave_scorer.py           ← Direction + conviction scoring
-│   │   └── amplitude_tracker.py    ← Historical wave amplitude stats
-│   │
-│   ├── confluence/
-│   │   ├── hierarchy_weights.py     ← Timeframe strength coefficients
-│   │   ├── alignment_engine.py      ← Cross-timeframe confluence scoring
-│   │   └── entry_filter.py          ← Entry conditions from confluence
-│   │
+│   │   ├── downloader.py            ← Historical data fetcher (paginated)
+│   │   ├── stream.py                ← Live price streaming
+│   │   └── storage.py               ← Parquet/SQLite store
+│   ├── features/
+│   │   ├── indicators.py            ← Technical indicators (TA-Lib)
+│   │   ├── patterns.py              ← Chart pattern detection
+│   │   ├── mtf.py                   ← Multi-timeframe alignment
+│   │   └── engineer.py              ← Feature pipeline orchestrator
+│   ├── models/
+│   │   ├── transformer.py           ← Sequence model (PyTorch)
+│   │   ├── rl_agent.py              ← PPO reinforcement learning agent
+│   │   ├── sl_tp_module.py          ← Dynamic SL/TP predictor
+│   │   └── ensemble.py              ← Model ensemble & voting
 │   ├── risk/
 │   │   ├── position_sizer.py        ← Kelly / fixed-fraction sizing
-│   │   ├── sl_tp_engine.py          ← Wave-origin SL, amplitude-based TP
-│   │   └── circuit_breaker.py       ← Daily drawdown halt, max loss
-│   │
+│   │   ├── circuit_breaker.py       ← Daily loss halt, max DD
+│   │   └── validator.py             ← Pre-trade compliance check
 │   ├── execution/
-│   │   ├── order_manager.py         ← OANDA order placement / modification
-│   │   ├── trade_monitor.py         ← Live trade tracking
-│   │   └── spread_filter.py         ← Entry block on excessive spread
-│   │
+│   │   ├── order_manager.py         ← Order placement & modification
+│   │   ├── trade_monitor.py         ← Live trade tracker
+│   │   └── reconciler.py            ← Account reconciliation
 │   ├── backtest/
-│   │   ├── engine.py                ← Walk-forward backtest runner
-│   │   ├── spread_simulator.py      ← Variable spread simulation
-│   │   └── metrics.py               ← Win rate, Sharpe, MFE, MAE
-│   │
-│   └── utils/
-│       ├── logger.py                ← Structured trade + system logging
-│       ├── config.py                ← Central config loader
-│       └── timezone_handler.py     ← Session timing (London/NY/Asia)
-│
-├── config/
-│   ├── pairs.yaml                   ← Active instruments list
-│   ├── timeframes.yaml              ← Enabled TFs + hierarchy weights
-│   └── risk.yaml                   ← Risk parameters
-│
+│   │   ├── engine.py                ← Walk-forward backtest engine
+│   │   ├── metrics.py               ← Sharpe, sortino, MFE, MAE
+│   │   └── reporter.py              ← HTML/CSV report generator
+│   └── monitoring/
+│       ├── logger.py                ← Structured JSON logging
+│       ├── alerts.py                ← Telegram / email alerting
+│       └── dashboard.py             ← FastAPI metrics endpoint
+├── scripts/
+│   ├── setup_vps.sh                 ← Vultr VPS bootstrap script
+│   ├── download_history.py          ← One-time data download CLI
+│   ├── run_backtest.py              ← Backtest runner CLI
+│   └── start_bot.py                 ← Live trading launcher
 ├── notebooks/
-│   ├── 01_data_collection.ipynb    ← Pull + store OANDA history
-│   ├── 02_wave_labeling.ipynb      ← Visualize wave detection
-│   ├── 03_confluence_analysis.ipynb ← MTF alignment exploration
-│   └── 04_backtest_analysis.ipynb  ← Results + tuning
-│
+│   ├── 01_data_exploration.ipynb
+│   ├── 02_feature_analysis.ipynb
+│   ├── 03_model_training.ipynb      ← Run on Google Colab (GPU)
+│   └── 04_backtest_analysis.ipynb
 ├── tests/
-│   ├── test_swing_detector.py
-│   ├── test_wave_scorer.py
-│   └── test_confluence_engine.py
-│
-└── requirements.txt
+│   ├── test_api_client.py
+│   ├── test_features.py
+│   ├── test_risk.py
+│   └── test_execution.py
+├── requirements.txt
+├── requirements-gpu.txt             ← Colab/GPU training dependencies
+├── Dockerfile
+├── docker-compose.yml
+└── .env.example                     ← Environment variable template
 ```
 
 ---
 
 ## Quickstart
 
-### 1. Prerequisites
-
-- Python 3.10+
-- OANDA fxTrade or fxTrade Practice account (v20)
-- OANDA API access token (generated from Account Management Portal)
-- VS Code with Python extension
-- Google Colab access (for GPU training of RL layer, Phase 2)
-
-### 2. Installation
+### 1. Clone and configure
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/forex-wave-bot.git
-cd forex-wave-bot
+git clone https://github.com/your-org/oandafx.git
+cd oandafx
+cp .env.example .env
+cp config/accounts.yaml.example config/accounts.yaml
+# Edit both files with your OANDA credentials
+```
+
+### 2. Install dependencies
+
+```bash
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configuration
+### 3. Download historical data
 
 ```bash
-cp config/example.env .env
-# Edit .env and add:
-# OANDA_API_TOKEN=your_token_here
-# OANDA_ACCOUNT_ID=your_account_id
-# OANDA_ENVIRONMENT=practice  # or 'live'
+python scripts/download_history.py \
+  --pairs EUR_USD GBP_USD USD_JPY \
+  --granularities M15 H1 H4 D \
+  --start 2015-01-01
 ```
 
-### 4. Pull Historical Data
+### 4. Train the model (Colab)
+
+Open `notebooks/03_model_training.ipynb` in Google Colab with a GPU runtime. Upload your downloaded data to Drive or Colab storage, then run all cells.
+
+### 5. Run backtest
 
 ```bash
-python src/data/data_collector.py --pair EUR_USD --start 2015-01-01 --timeframes M1,M5,M15,H1,H4,D
+python scripts/run_backtest.py \
+  --model models/latest.pt \
+  --start 2023-01-01 \
+  --end 2024-12-31
 ```
 
-### 5. Run Wave Labeling (Visual Check)
+### 6. Deploy to Vultr VPS
 
 ```bash
-jupyter notebook notebooks/02_wave_labeling.ipynb
-```
-
-### 6. Backtest
-
-```bash
-python src/backtest/engine.py --pair EUR_USD --start 2020-01-01 --end 2023-12-31
-```
-
-### 7. Paper Trade
-
-```bash
-python main.py --mode paper --pairs EUR_USD,GBP_USD,USD_JPY
+# On your Vultr instance (Ubuntu 22.04)
+bash scripts/setup_vps.sh
+python scripts/start_bot.py --config config/accounts.yaml
 ```
 
 ---
 
-## Core Principles
+## Core Design Principles
 
-### Accuracy Over Frequency
-
-This bot does not trade for volume. It trades for accuracy. A setup is only valid when multiple timeframes are wave-aligned. The model sits in cash most of the time. When it acts, it acts with high conviction.
-
-### No Entry Against a Higher-Frame Wave
-
-A lower timeframe can only generate an entry signal in the direction of the nearest higher timeframe wave with conviction above threshold. A counter-trend entry is only permitted when the lower timeframe is showing clear exhaustion of the higher frame's wave (wave maturity > 80%) combined with a structural reversal signal.
-
-### Wave Origin is the Stop Loss
-
-Stop losses are not arbitrary pip distances or ATR multiples. They sit at the origin of the wave that generated the entry signal. If the wave's origin is breached, the wave thesis is invalidated. The trade is wrong. Exit.
-
-### Spread is Real Cost
-
-All backtests and live entries account for OANDA's variable bid/ask spread. No entry is placed when the spread exceeds a pair-specific maximum threshold. Spread cost is modeled explicitly in every backtest run.
+| Principle | Implementation |
+|-----------|---------------|
+| **OANDA-native data** | All training and live data sourced from OANDA API — no third-party data mismatches |
+| **Multi-account** | Single bot instance manages N OANDA accounts simultaneously via `account_manager.py` |
+| **No hardcoded pairs** | Pair list is fully configurable; the model is pair-agnostic |
+| **No hardcoded timeframes** | MTF alignment engine dynamically composes any combination |
+| **Adaptive SL/TP** | Stop loss and take profit are model outputs, not fixed rules |
+| **Regulation-aware** | Leverage, margin, and NFA rules enforced in `validator.py` before every order |
+| **Resilient** | Exponential backoff, reconnect logic, and circuit breakers handle API failures |
+| **Auditable** | Every decision, order, and error is logged as structured JSON |
 
 ---
 
-## OANDA Compliance
+## Technology Stack
 
-| Rule | Implementation |
-|---|---|
-| Max leverage (US) | 50:1 majors, 20:1 minors — hardcoded ceiling |
-| 5,000 candle API limit | Paginated downloader with auto-advance |
-| Variable spreads | Real-time spread filter + backtest simulation |
-| API maintenance windows | Friday ~5pm NY — reconnect with backoff |
-| Transaction logging | All orders/trades written to structured log |
-| Demo before live | Paper trading mode mirrors live API exactly |
-
----
-
-## Accuracy Targets
-
-| Metric | Target |
-|---|---|
-| Win rate | ≥ 60% |
-| Risk:Reward | ≥ 1:2 minimum per trade |
-| Max daily drawdown | 2% account |
-| Max total drawdown | 8% account |
-| Sharpe ratio (backtest) | ≥ 1.5 |
-| Trades per day (per pair) | 0–5 (quality over quantity) |
+| Layer | Technology |
+|-------|-----------|
+| Language | Python 3.11+ |
+| OANDA API | `oandapyV20` (REST v20) |
+| Data storage | Parquet (historical), SQLite (live trades) |
+| ML framework | PyTorch 2.x |
+| RL framework | Stable-Baselines3 (PPO) |
+| Technical indicators | TA-Lib, pandas-ta |
+| Web framework | FastAPI (monitoring dashboard) |
+| Deployment | Vultr VPS, Ubuntu 22.04, Docker |
+| GPU training | Google Colab (T4/A100) |
+| Version control | GitHub |
+| IDE | VS Code + Python extension |
+| Alerting | Telegram Bot API |
 
 ---
 
-## Development Roadmap
+## Multi-Account Architecture
 
-| Phase | Focus | Status |
-|---|---|---|
-| Phase 1 | OANDA data pipeline + storage | Build first |
-| Phase 2 | Wave detector + labeling engine | Core of the system |
-| Phase 3 | Strength hierarchy + confluence scoring | Standalone edge |
-| Phase 4 | Risk engine + OANDA compliance | Non-negotiable |
-| Phase 5 | Backtesting + walk-forward validation | Before any live capital |
-| Phase 6 | Paper trading on OANDA practice | 4–6 weeks minimum |
-| Phase 7 | Live deployment (micro lots first) | After Phase 6 proves out |
-| Phase 8 | RL agent on top of wave confluence | Only if Phase 3 needs it |
+The system supports adding unlimited OANDA accounts. Each account is defined in `config/accounts.yaml` and identified by a unique alias. Accounts can share the same trading strategy or run independent strategies.
 
-> Phase 8 is deliberately last. If the pure wave confluence system achieves accuracy targets, the RL layer may never be needed.
+```yaml
+accounts:
+  - alias: "primary"
+    api_key: "your-api-key-1"
+    account_id: "001-001-XXXXXXX-001"
+    environment: "live"           # or "practice"
+    strategy: "default"
+    max_risk_per_trade: 0.01      # 1% per trade
+
+  - alias: "secondary"
+    api_key: "your-api-key-2"
+    account_id: "001-001-XXXXXXX-002"
+    environment: "practice"
+    strategy: "conservative"
+    max_risk_per_trade: 0.005
+```
+
+See [docs/MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md) for full configuration reference.
 
 ---
 
-## Important Disclaimer
+## OANDA API Key Facts
 
-This system is built for educational and research purposes. Forex trading carries significant risk. Past backtest performance does not guarantee future results. Always start on OANDA's practice account. Never risk capital you cannot afford to lose.
+| Constraint | Value | Impact |
+|------------|-------|--------|
+| Max candles per request | 5,000 | Pagination required for long histories |
+| Historical data depth | 2005 to present | ~20 years of training data available |
+| Supported granularities | S5, S10, S15, S30, M1, M2, M4, M5, M10, M15, M30, H1, H2, H3, H4, H6, H8, H12, D, W, M | Full MTF coverage |
+| Max leverage (US majors) | 50:1 | Enforced in position sizer |
+| Instruments available | 90+ | FX pairs, metals, indices, commodities |
+| API maintenance window | Friday ~5pm–6pm ET | Bot pauses automatically |
+| Streaming endpoint | Yes (pricing + transactions) | Used for live tick data |
+
+---
+
+## Disclaimer
+
+This software is for educational and research purposes. Forex trading involves substantial risk of loss and is not appropriate for all investors. Past performance of any model or backtest is not indicative of future results. Always test on a demo account before trading live funds. The authors accept no responsibility for financial losses incurred through use of this software.
+
+---
+
+## Documentation Index
+
+| Document | Purpose |
+|----------|---------|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full system design, module interactions, data flow |
+| [DATA_PIPELINE.md](docs/DATA_PIPELINE.md) | How historical and live data is collected, stored, paginated |
+| [FEATURE_ENGINEERING.md](docs/FEATURE_ENGINEERING.md) | All indicators, patterns, and MTF features |
+| [MODEL_SPEC.md](docs/MODEL_SPEC.md) | Neural network and RL agent design |
+| [RISK_MANAGEMENT.md](docs/RISK_MANAGEMENT.md) | Position sizing, SL/TP, circuit breakers |
+| [OANDA_COMPLIANCE.md](docs/OANDA_COMPLIANCE.md) | Regulatory constraints, spread modeling |
+| [MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md) | Multi-API and multi-account configuration |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Vultr VPS setup, Docker, process management |
+| [TRAINING.md](docs/TRAINING.md) | Google Colab GPU training guide |
+| [MONITORING.md](docs/MONITORING.md) | Logging, alerting, dashboard |

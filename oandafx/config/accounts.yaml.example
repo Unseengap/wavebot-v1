@@ -1,0 +1,89 @@
+# OandaFX — Account Configuration
+# Copy to accounts.yaml and fill in your credentials.
+# NEVER commit accounts.yaml to Git — it is in .gitignore.
+
+accounts:
+
+  # ─── Account 1: Primary Live Account ─────────────────────────
+  - alias: "primary_live"
+    enabled: true
+    environment: "live"                        # "live" or "practice"
+    api_key: "YOUR_OANDA_API_KEY_1"
+    account_id: "001-001-XXXXXXX-001"
+    strategy: "default"
+    base_currency: "USD"
+
+    risk:
+      max_risk_per_trade: 0.01                 # 1% of balance per trade
+      max_daily_loss_pct: 0.03                 # Halt if down 3% in a day
+      max_drawdown_pct: 0.08                   # Halt if down 8% from peak
+      max_open_trades: 5
+      max_correlated_exposure: 2               # Max trades in same currency
+
+    pairs:
+      - EUR_USD
+      - GBP_USD
+      - USD_JPY
+      - AUD_USD
+      - USD_CHF
+
+    notifications:
+      telegram_chat_id: "-100XXXXXXXXXX"
+
+  # ─── Account 2: Practice / Shadow Account ────────────────────
+  - alias: "shadow_practice"
+    enabled: true
+    environment: "practice"
+    api_key: "YOUR_OANDA_API_KEY_2"
+    account_id: "101-001-XXXXXXX-001"
+    strategy: "aggressive"
+    base_currency: "USD"
+
+    risk:
+      max_risk_per_trade: 0.02
+      max_daily_loss_pct: 0.05
+      max_drawdown_pct: 0.15
+      max_open_trades: 8
+      max_correlated_exposure: 3
+
+    pairs: []                                   # Empty = use global pair list
+
+    notifications:
+      telegram_chat_id: ""                      # Uses global default
+
+  # ─── Account 3: Conservative Long-Term ───────────────────────
+  - alias: "conservative_longterm"
+    enabled: false
+    environment: "live"
+    api_key: "YOUR_OANDA_API_KEY_3"
+    account_id: "001-001-XXXXXXX-003"
+    strategy: "conservative"
+    base_currency: "USD"
+
+    risk:
+      max_risk_per_trade: 0.005
+      max_daily_loss_pct: 0.02
+      max_drawdown_pct: 0.05
+      max_open_trades: 3
+      max_correlated_exposure: 1
+
+    pairs:
+      - EUR_USD
+      - USD_JPY
+      - XAU_USD
+
+    notifications:
+      telegram_chat_id: ""
+
+# ─── Global Notification Settings ──────────────────────────────
+notifications:
+  telegram_bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  telegram_chat_id: "-100XXXXXXXXXX"
+  email_alerts: false
+  email_address: ""
+
+# ─── Global API Rate Limiting ──────────────────────────────────
+rate_limits:
+  max_requests_per_second: 20
+  candle_requests_per_minute: 60
+  order_requests_per_minute: 30

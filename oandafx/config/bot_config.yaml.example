@@ -1,0 +1,65 @@
+# OandaFX — Bot Strategy Configuration
+# Copy to bot_config.yaml and customize.
+
+# ─── Strategy Profiles ─────────────────────────────────────────
+strategies:
+
+  default:
+    base_timeframe: "M15"
+    higher_timeframes: ["H1", "H4", "D"]
+    model_path: "data/models/latest/transformer.pt"
+    rl_agent_path: "data/models/latest/ppo_agent.zip"
+    min_confidence: 0.65
+    lookback_bars: 128
+    pairs:
+      - EUR_USD
+      - GBP_USD
+      - USD_JPY
+      - AUD_USD
+
+  conservative:
+    base_timeframe: "H1"
+    higher_timeframes: ["H4", "D", "W"]
+    model_path: "data/models/latest/transformer.pt"
+    rl_agent_path: "data/models/latest/ppo_agent.zip"
+    min_confidence: 0.75
+    lookback_bars: 128
+    pairs:
+      - EUR_USD
+      - USD_JPY
+
+  aggressive:
+    base_timeframe: "M5"
+    higher_timeframes: ["M15", "H1", "H4"]
+    model_path: "data/models/latest/transformer.pt"
+    rl_agent_path: "data/models/latest/ppo_agent.zip"
+    min_confidence: 0.60
+    lookback_bars: 128
+    pairs:
+      - EUR_USD
+      - GBP_USD
+      - USD_JPY
+      - AUD_USD
+      - USD_CHF
+      - EUR_JPY
+      - GBP_JPY
+
+# ─── Global Trading Settings ──────────────────────────────────
+trading:
+  max_system_currency_exposure: 3              # Max trades across all accounts in one currency
+  bar_close_delay_seconds: 2                   # Wait after bar close before fetching
+  maintenance_check_minutes: 5                 # Retry interval during OANDA maintenance
+  model_reload_on_pull: true                   # Auto-reload model after git pull
+
+# ─── Data Settings ─────────────────────────────────────────────
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  models_dir: "data/models"
+  logs_dir: "data/logs"
+
+# ─── Ensemble Weights ─────────────────────────────────────────
+ensemble:
+  transformer_weight: 0.6
+  rl_weight: 0.4
+  update_frequency: "weekly"
