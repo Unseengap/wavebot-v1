@@ -1,36 +1,42 @@
-# Environment and secrets
+# Credentials — NEVER commit
+config/accounts.yaml
 .env
-*.env
-config/secrets.yaml
+
+# Data directories
+data/raw/
+data/processed/
+data/models/
+data/logs/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
 venv/
-env/
 
-# Data — too large for GitHub
+# Model artifacts
+*.pt
+*.zip
+*.pkl
+*.onnx
 
-*.db
-*.sqlite
-*.parquet
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Jupyter
 .ipynb_checkpoints/
-
-# Reports
-reports/
-
-# IDE
-.vscode/settings.json
-.idea/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Drive mount artifacts
-drive/
+# Docker
+docker-compose.override.yml
